@@ -28,6 +28,11 @@ REGIONS = {
     "australia": "https://augateway.isolarcloud.com",
 }
 
+# Sungrow doesn't document token lifetime. 25min is a conservative guess;
+# get_plant() also retries once on failure with a fresh login, so an
+# early-expired token still self-heals instead of erroring out.
+_TOKEN_TTL_SECONDS = 25 * 60
+
 
 class SungrowApiError(Exception):
     """Raised when the iSolarCloud API returns a non-success result."""
@@ -38,8 +43,9 @@ def _pad_b64(value: str) -> str:
 
 
 class SungrowClient:
-    """Logs in fresh on every call — see README for why token caching is
-    deliberately skipped."""
+    """Caches the login token (see _TOKEN_TTL_SECONDS) — Sungrow's free tier
+    caps requests at 2000/hour and 100000/month, and login+list used to cost
+    2 calls per poll for no reason."""
 
     def __init__(
         self,
@@ -63,12 +69,11 @@ class SungrowClient:
             self._rsa_key = RSA.import_key(der)
             key_password = (api_call_password or password).encode("utf-8")
             self._aes_key = key_password[:16].ljust(16, b"0")
+        self._token: str | None = None
+        self._token_fetched_at = 0.0
 
     def get_plant(self, plant_id: str | None = None) -> dict:
-        token = self._login()
-        result = self._post(
-            "/openapi/getPowerStationList", {"curPage": 1, "size": 100}, token
-        )
+        result = self._get_station_list()
         plants = result.get("pageList") or []
         if not plants:
             raise SungrowApiError("No plants returned for this account")
@@ -78,6 +83,22 @@ class SungrowClient:
                     return plant
             raise SungrowApiError(f"plant_id {plant_id} not found in account")
         return plants[0]
+
+    def _get_station_list(self) -> dict:
+        body = {"curPage": 1, "size": 100}
+        try:
+            return self._post("/openapi/getPowerStationList", body, self._get_token())
+        except SungrowApiError:
+            # cached token may have expired earlier than our TTL guess —
+            # force a fresh login and retry exactly once
+            self._token = None
+            return self._post("/openapi/getPowerStationList", body, self._get_token())
+
+    def _get_token(self) -> str:
+        if self._token is None or time.monotonic() - self._token_fetched_at > _TOKEN_TTL_SECONDS:
+            self._token = self._login()
+            self._token_fetched_at = time.monotonic()
+        return self._token
 
     def _login(self) -> str:
         result = self._post(

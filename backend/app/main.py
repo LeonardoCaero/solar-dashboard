@@ -38,7 +38,7 @@ _client = SungrowClient(
 )
 _plant_id = os.environ.get("SUNGROW_PLANT_ID")
 
-_CACHE_TTL_SECONDS = 30
+_CACHE_TTL_SECONDS = 60
 _cache: dict = {"data": None, "fetched_at": 0.0}
 
 

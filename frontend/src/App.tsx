@@ -11,8 +11,10 @@ import {
 } from "recharts";
 import { fetchPlant, type PlantSnapshot } from "./api";
 
-const POLL_MS = 15_000;
-const MAX_POINTS = 60;
+// Sungrow's free API tier caps at 2000 calls/hour, 100000/month, and solar
+// power doesn't change fast enough to need finer than this anyway.
+const POLL_MS = 60_000;
+const MAX_POINTS = 60; // 1 hour of history at this poll rate
 
 interface PowerPoint {
   time: string;
@@ -110,13 +112,15 @@ export default function App() {
   });
 
   useEffect(() => {
-    if (!data || typeof data.power.value !== "number") return;
+    if (!data) return;
+    const power = Number(data.power.value);
+    if (Number.isNaN(power)) return;
     setHistory((prev) => {
       const next = [
         ...prev,
         {
           time: new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }),
-          power: data.power.value as number,
+          power,
         },
       ];
       return next.slice(-MAX_POINTS);
@@ -200,7 +204,7 @@ export default function App() {
               </ResponsiveContainer>
             ) : (
               <p className="py-10 text-center text-sm text-slate-400">
-                Recogiendo datos… vuelve en un minuto.
+                Recogiendo datos… vuelve en un par de minutos.
               </p>
             )}
           </div>
