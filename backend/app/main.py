@@ -1,25 +1,36 @@
-"""FastAPI wrapper around SungrowClient — one endpoint, one cache.
-
-ponytail: no DB/history here on purpose — long-term stats already live in
-Home Assistant's recorder (see the sungrow_isolarcloud custom_component).
-This API is just the live snapshot for the web dashboard / wall widget.
+"""FastAPI wrapper around SungrowClient — one endpoint, one cache, plus a
+background sampler that writes to a local sqlite file so the day chart
+still has data even when nobody has the dashboard open.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import time
+from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.history_store import HistoryStore
 from app.sungrow_client import SungrowApiError, SungrowClient
 from app.usage_tracker import UsageTracker
 
 load_dotenv()
 
-app = FastAPI(title="Solar Dashboard API", version="0.1.0")
+SAMPLE_INTERVAL_SECONDS = 300  # 5min — see README for the quota math
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(_background_sampler())
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="Solar Dashboard API", version="0.1.0", lifespan=lifespan)
 
 cors_origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173").split(",")
 app.add_middleware(
@@ -30,6 +41,7 @@ app.add_middleware(
 )
 
 _usage = UsageTracker(Path(__file__).resolve().parent.parent / "quota_usage.json")
+_history = HistoryStore(Path(__file__).resolve().parent.parent / "history.db")
 
 _client = SungrowClient(
     region=os.environ.get("SUNGROW_REGION", "europe"),
@@ -62,6 +74,34 @@ def _ttl_cache(ttl_seconds: float, fetch):
 _get_plant_cached = _ttl_cache(300, lambda: _client.get_plant(_plant_id))
 _get_realtime_cached = _ttl_cache(60, lambda: _client.get_realtime(_plant_id))
 _get_faults_cached = _ttl_cache(300, lambda: _client.get_active_faults(_plant_id))
+
+
+def _to_kw(data: dict) -> dict:
+    def kw(watts: float) -> float:
+        return round(watts / 1000, 3)
+
+    return {
+        "pv": kw(data["pv_w"]),
+        "grid": kw(data["grid_w"]),
+        "battery": kw(data["battery_w"]),
+        "load": kw(data["load_w"]),
+        "soc": data["battery_soc_pct"],
+    }
+
+
+async def _background_sampler():
+    """Keeps sampling on SAMPLE_INTERVAL_SECONDS regardless of whether
+    anyone has the dashboard open, so /api/history has no gaps."""
+    while True:
+        try:
+            reading = _to_kw(await asyncio.to_thread(_get_realtime_cached))
+            _history.add(
+                pv=reading["pv"], grid=reading["grid"],
+                battery=reading["battery"], load=reading["load"], soc=reading["soc"],
+            )
+        except SungrowApiError:
+            pass  # transient API error — just try again next interval
+        await asyncio.sleep(SAMPLE_INTERVAL_SECONDS)
 
 
 @app.get("/health")
@@ -100,20 +140,34 @@ def get_plant():
 @app.get("/api/realtime")
 def get_realtime():
     try:
-        data = _get_realtime_cached()
+        reading = _to_kw(_get_realtime_cached())
     except SungrowApiError as err:
         raise HTTPException(status_code=502, detail=str(err)) from err
 
-    def kw(watts: float) -> float:
-        return round(watts / 1000, 3)
-
     return {
-        "pv": {"value": kw(data["pv_w"]), "unit": "kW"},
-        "grid": {"value": kw(data["grid_w"]), "unit": "kW"},
-        "battery": {"value": kw(data["battery_w"]), "unit": "kW"},
-        "load": {"value": kw(data["load_w"]), "unit": "kW"},
-        "battery_soc": {"value": data["battery_soc_pct"], "unit": "%"},
+        "pv": {"value": reading["pv"], "unit": "kW"},
+        "grid": {"value": reading["grid"], "unit": "kW"},
+        "battery": {"value": reading["battery"], "unit": "kW"},
+        "load": {"value": reading["load"], "unit": "kW"},
+        "battery_soc": {"value": reading["soc"], "unit": "%"},
     }
+
+
+@app.get("/api/history")
+def get_history():
+    """Today's samples, 00:00 to now, from the background sampler."""
+    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return [
+        {
+            "time": datetime.fromtimestamp(r["ts"]).strftime("%H:%M"),
+            "pv": r["pv"],
+            "grid": r["grid"],
+            "battery": r["battery"],
+            "load": r["load"],
+            "soc": r["soc"],
+        }
+        for r in _history.since(int(midnight.timestamp()))
+    ]
 
 
 @app.get("/api/quota")

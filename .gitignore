@@ -9,6 +9,7 @@ __pycache__/
 .venv/
 .pytest_cache/
 quota_usage.json
+history.db
 
 # node
 node_modules/

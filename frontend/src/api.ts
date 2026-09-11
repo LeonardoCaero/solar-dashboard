@@ -59,3 +59,17 @@ export async function fetchQuota(): Promise<QuotaSnapshot> {
   const { data } = await api.get<QuotaSnapshot>("/quota");
   return data;
 }
+
+export interface HistoryPoint {
+  time: string;
+  pv: number;
+  grid: number;
+  battery: number;
+  load: number;
+  soc: number;
+}
+
+export async function fetchHistory(): Promise<HistoryPoint[]> {
+  const { data } = await api.get<HistoryPoint[]>("/history");
+  return data;
+}

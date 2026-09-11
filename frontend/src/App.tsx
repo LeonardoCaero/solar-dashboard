@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Area,
@@ -11,6 +11,7 @@ import {
   YAxis,
 } from "recharts";
 import {
+  fetchHistory,
   fetchPlant,
   fetchQuota,
   fetchRealtime,
@@ -22,7 +23,9 @@ import {
 // Sungrow's free API tier caps at 2000 calls/hour, 100000/month, and solar
 // power doesn't change fast enough to need finer than this anyway.
 const POLL_MS = 60_000;
-const MAX_POINTS = 60; // 1 hour of history at this poll rate
+// a day of 5min background samples (~288) plus a long open session polling
+// every 60s — generous headroom, Recharts handles this fine
+const MAX_POINTS = 1000;
 
 interface FlowPoint {
   time: string;
@@ -152,6 +155,21 @@ export default function App() {
     refetchInterval: POLL_MS,
   });
 
+  const { data: historyData } = useQuery({
+    queryKey: ["history"],
+    queryFn: fetchHistory,
+    staleTime: Infinity, // one-shot seed for today; live polling takes over from here
+  });
+
+  const historySeeded = useRef(false);
+  useEffect(() => {
+    if (!historyData || historySeeded.current) return;
+    historySeeded.current = true;
+    // prepend rather than replace — a live point may have already landed
+    // from the realtime poll before this request resolved
+    setHistory((prev) => [...historyData, ...prev].slice(-MAX_POINTS));
+  }, [historyData]);
+
   useEffect(() => {
     // keyed on the fetch timestamp, not the `realtime` object — React
     // Query reuses the same object reference when two polls return
@@ -222,7 +240,7 @@ export default function App() {
           </div>
 
           <div className="mb-8 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5">
-            <p className="mb-3 text-sm text-[var(--text-muted)]">PV / Red / Batería / Carga — última hora</p>
+            <p className="mb-3 text-sm text-[var(--text-muted)]">PV / Red / Batería / Carga — hoy</p>
             {history.length > 1 ? (
               <ResponsiveContainer width="100%" height={260}>
                 <AreaChart data={history} margin={{ left: -20, right: 10, top: 5 }}>
@@ -235,7 +253,12 @@ export default function App() {
                     ))}
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis dataKey="time" tick={{ fontSize: 11, fill: "var(--text-muted)" }} stroke="var(--border)" />
+                  <XAxis
+                    dataKey="time"
+                    tick={{ fontSize: 11, fill: "var(--text-muted)" }}
+                    stroke="var(--border)"
+                    interval={Math.max(0, Math.ceil(history.length / 8) - 1)}
+                  />
                   <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} stroke="var(--border)" width={40} unit=" kW" />
                   <Tooltip
                     contentStyle={{
