@@ -6,7 +6,7 @@ services:
     container_name: solar_api
     restart: unless-stopped
     ports:
-      - "127.0.0.1:4100:8000"
+      - "4100:8000"   # LAN-reachable — no reverse proxy in front yet
     env_file:
       - ./backend/.env
     networks:
@@ -17,11 +17,15 @@ services:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        VITE_API_URL: ${VITE_API_URL:-/api}
+        # browser calls this directly, so it must be the NAS's LAN IP, not
+        # the Docker service name — change if the NAS's IP ever changes,
+        # or once you put a reverse proxy in front (see README) and can
+        # go back to the relative "/api" default.
+        VITE_API_URL: ${VITE_API_URL:-http://192.168.1.101:4100/api}
     container_name: solar_frontend
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8081:80"   # SSL terminates at the NAS system nginx
+      - "8081:80"   # LAN-reachable — no reverse proxy in front yet
     depends_on:
       - solar_api
     networks:
