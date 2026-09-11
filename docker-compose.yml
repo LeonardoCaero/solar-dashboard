@@ -1,0 +1,32 @@
+services:
+  solar_api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: solar_api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4100:8000"
+    env_file:
+      - ./backend/.env
+    networks:
+      - solar_net
+
+  solar_frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api}
+    container_name: solar_frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:80"   # SSL terminates at the NAS system nginx
+    depends_on:
+      - solar_api
+    networks:
+      - solar_net
+
+networks:
+  solar_net:
+    driver: bridge
