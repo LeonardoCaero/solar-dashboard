@@ -8,6 +8,10 @@ export interface Metric {
 export interface Fault {
   device_name: string | null;
   status: string;
+  device_type_name: string | null;
+  model_code: string | null;
+  serial: string | null;
+  connected_since: string | null;
 }
 
 export interface PlantSnapshot {
@@ -41,5 +45,17 @@ export async function fetchPlant(): Promise<PlantSnapshot> {
 
 export async function fetchRealtime(): Promise<RealtimeSnapshot> {
   const { data } = await api.get<RealtimeSnapshot>("/realtime");
+  return data;
+}
+
+export interface QuotaSnapshot {
+  hour_used: number;
+  hour_limit: number;
+  month_used: number;
+  month_limit: number;
+}
+
+export async function fetchQuota(): Promise<QuotaSnapshot> {
+  const { data } = await api.get<QuotaSnapshot>("/quota");
   return data;
 }

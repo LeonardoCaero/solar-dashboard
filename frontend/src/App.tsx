@@ -10,7 +10,14 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { fetchPlant, fetchRealtime, type PlantSnapshot, type RealtimeSnapshot } from "./api";
+import {
+  fetchPlant,
+  fetchQuota,
+  fetchRealtime,
+  type PlantSnapshot,
+  type QuotaSnapshot,
+  type RealtimeSnapshot,
+} from "./api";
 
 // Sungrow's free API tier caps at 2000 calls/hour, 100000/month, and solar
 // power doesn't change fast enough to need finer than this anyway.
@@ -23,120 +30,100 @@ interface FlowPoint {
   grid: number;
   battery: number;
   load: number;
-  soc: number;
 }
 
 const SERIES = [
-  { key: "pv", label: "PV", color: "#f59e0b" },
-  { key: "grid", label: "Red", color: "#3b82f6" },
-  { key: "battery", label: "Batería", color: "#22c55e" },
-  { key: "load", label: "Carga", color: "#ef4444" },
+  { key: "pv", label: "PV", color: "var(--pv)" },
+  { key: "grid", label: "Red", color: "var(--grid)" },
+  { key: "battery", label: "Batería", color: "var(--battery)" },
+  { key: "load", label: "Carga", color: "var(--load)" },
 ] as const;
 
-function formatValue(value: number | string | null): string {
+function formatValue(value: number | string | null | undefined): string {
   if (value === null || value === undefined) return "—";
   const n = typeof value === "string" ? Number(value) : value;
   if (Number.isNaN(n)) return String(value);
   return n.toLocaleString("es-ES", { maximumFractionDigits: 2 });
 }
 
-function StatCard({
+function StatChip({
   label,
   value,
   unit,
-  icon,
-  accent,
+  color,
 }: {
   label: string;
   value: string;
   unit: string | null;
-  icon: React.ReactNode;
-  accent: string;
+  color: string;
 }) {
   return (
-    <div className="flex flex-1 min-w-[160px] items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-      <div
-        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl"
-        style={{ background: `${accent}1a`, color: accent }}
-      >
-        {icon}
+    <div
+      className="min-w-[140px] flex-1 rounded-lg border-l-2 bg-[var(--surface)] px-4 py-3"
+      style={{ borderLeftColor: color }}
+    >
+      <p className="text-xs text-[var(--text-muted)]">{label}</p>
+      <p className="font-mono text-xl font-medium">
+        {value}
+        {unit ? <span className="ml-1 text-sm text-[var(--text-muted)]">{unit}</span> : null}
+      </p>
+    </div>
+  );
+}
+
+function QuotaBar({ label, used, limit }: { label: string; used: number; limit: number }) {
+  const pct = Math.min(100, (used / limit) * 100);
+  const color = pct > 90 ? "var(--danger)" : pct > 70 ? "var(--pv)" : "var(--battery)";
+  return (
+    <div>
+      <div className="mb-1 flex justify-between text-xs text-[var(--text-muted)]">
+        <span>{label}</span>
+        <span className="font-mono">
+          {used.toLocaleString("es-ES")} / {limit.toLocaleString("es-ES")}
+        </span>
       </div>
-      <div className="min-w-0">
-        <p className="text-sm text-slate-500 dark:text-slate-400">{label}</p>
-        <p className="truncate text-2xl font-semibold text-slate-900 dark:text-slate-50">
-          {value}
-          {unit ? (
-            <span className="ml-1 text-base font-normal text-slate-400">
-              {unit}
-            </span>
-          ) : null}
-        </p>
+      <div className="h-1.5 rounded-full bg-[var(--border)]">
+        <div
+          className="h-full rounded-full transition-[width]"
+          style={{ width: `${pct}%`, background: color }}
+        />
       </div>
     </div>
   );
 }
 
-const SunIcon = () => (
-  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2">
-    <circle cx="12" cy="12" r="4" />
-    <path
-      strokeLinecap="round"
-      d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"
-    />
-  </svg>
-);
-
-const LeafIcon = () => (
-  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2">
-    <path d="M4 20c8 0 14-6 16-16C10 6 4 12 4 20Z" strokeLinejoin="round" />
-    <path d="M4 20c4-6 8-10 16-16" strokeLinecap="round" />
-  </svg>
-);
-
-const CounterIcon = () => (
-  <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2">
-    <rect x="3" y="4" width="18" height="16" rx="2" />
-    <path strokeLinecap="round" d="M7 9h4M7 13h6M7 17h3" />
-  </svg>
-);
-
-const CoinIcon = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
-    <circle cx="12" cy="12" r="9" />
-    <path strokeLinecap="round" d="M12 7v10M9 9.5c0-1.4 1.3-2.5 3-2.5s3 1.1 3 2.5-1.3 1.9-3 2.5-3 1.1-3 2.5 1.3 2.5 3 2.5 3-1.1 3-2.5" />
-  </svg>
-);
-
-const GridIcon = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
-    <path strokeLinecap="round" strokeLinejoin="round" d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z" />
-  </svg>
-);
-
-const BatteryIcon = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
-    <rect x="2" y="7" width="18" height="10" rx="2" />
-    <path strokeLinecap="round" d="M22 10v4" />
-  </svg>
-);
-
-const HomeIcon = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
-    <path strokeLinejoin="round" d="M3 11 12 4l9 7" />
-    <path strokeLinejoin="round" d="M5 9v10h14V9" />
-  </svg>
+const LiveDot = () => (
+  <span className="relative flex h-2 w-2">
+    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--battery)] opacity-75" />
+    <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--battery)]" />
+  </span>
 );
 
 const AlertIcon = () => (
-  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2">
     <path strokeLinejoin="round" d="M12 3 2 20h20L12 3Z" />
     <path strokeLinecap="round" d="M12 10v4M12 17h.01" />
+  </svg>
+);
+
+const ChevronIcon = ({ open }: { open: boolean }) => (
+  <svg
+    viewBox="0 0 24 24"
+    width="16"
+    height="16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    style={{ transform: open ? "rotate(180deg)" : undefined, transition: "transform 150ms" }}
+  >
+    <path strokeLinecap="round" strokeLinejoin="round" d="m6 9 6 6 6-6" />
   </svg>
 );
 
 export default function App() {
   const [history, setHistory] = useState<FlowPoint[]>([]);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [faultsOpen, setFaultsOpen] = useState(false);
 
   function toggleSeries(key: string) {
     setHidden((prev) => {
@@ -147,7 +134,7 @@ export default function App() {
     });
   }
 
-  const { data, isLoading, isError, error, dataUpdatedAt } = useQuery<PlantSnapshot>({
+  const { data, isLoading, isError, error } = useQuery<PlantSnapshot>({
     queryKey: ["plant"],
     queryFn: fetchPlant,
     refetchInterval: 5 * 60_000,
@@ -156,6 +143,12 @@ export default function App() {
   const { data: realtime, dataUpdatedAt: realtimeUpdatedAt } = useQuery<RealtimeSnapshot>({
     queryKey: ["realtime"],
     queryFn: fetchRealtime,
+    refetchInterval: POLL_MS,
+  });
+
+  const { data: quota } = useQuery<QuotaSnapshot>({
+    queryKey: ["quota"],
+    queryFn: fetchQuota,
     refetchInterval: POLL_MS,
   });
 
@@ -169,8 +162,7 @@ export default function App() {
     const grid = Number(realtime.grid.value);
     const battery = Number(realtime.battery.value);
     const load = Number(realtime.load.value);
-    const soc = Number(realtime.battery_soc.value);
-    if ([pv, grid, battery, load, soc].some(Number.isNaN)) return;
+    if ([pv, grid, battery, load].some(Number.isNaN)) return;
     setHistory((prev) => {
       const next = [
         ...prev,
@@ -180,83 +172,57 @@ export default function App() {
           grid,
           battery,
           load,
-          soc,
         },
       ];
       return next.slice(-MAX_POINTS);
     });
   }, [realtimeUpdatedAt]);
 
+  const faultCount = data?.faults.length ?? 0;
+
   return (
-    <div className="mx-auto min-h-svh max-w-4xl px-5 py-8">
-      <header className="mb-8 flex items-baseline justify-between">
+    <div className="mx-auto min-h-svh max-w-3xl px-5 py-10">
+      <header className="mb-10 flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-50">
-            ☀️ Solar
-          </h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            {data?.plant_name ?? "Cargando planta…"}
-          </p>
+          <p className="text-sm text-[var(--text-muted)]">{data?.plant_name ?? "Cargando planta…"}</p>
         </div>
-        {dataUpdatedAt ? (
-          <p className="text-xs text-slate-400">
-            Actualizado {new Date(dataUpdatedAt).toLocaleTimeString("es-ES")}
-          </p>
+        {realtimeUpdatedAt ? (
+          <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
+            <LiveDot />
+            {new Date(realtimeUpdatedAt).toLocaleTimeString("es-ES")}
+          </div>
         ) : null}
       </header>
 
       {isError ? (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+        <div className="rounded-lg border border-[var(--danger)]/40 bg-[var(--danger)]/10 p-4 text-sm text-[var(--danger)]">
           No se pudo conectar con el backend: {(error as Error)?.message}
         </div>
       ) : null}
 
       {isLoading ? (
-        <p className="text-sm text-slate-400">Cargando…</p>
+        <p className="text-sm text-[var(--text-muted)]">Cargando…</p>
       ) : data ? (
         <>
-          <div className="mb-4 flex flex-wrap gap-4">
-            <StatCard
-              label="PV"
-              value={formatValue(realtime?.pv.value ?? null)}
-              unit={realtime?.pv.unit ?? null}
-              icon={<SunIcon />}
-              accent="#f59e0b"
-            />
-            <StatCard
-              label="Red"
-              value={formatValue(realtime?.grid.value ?? null)}
-              unit={realtime?.grid.unit ?? null}
-              icon={<GridIcon />}
-              accent="#3b82f6"
-            />
-            <StatCard
-              label="Batería"
-              value={formatValue(realtime?.battery.value ?? null)}
-              unit={realtime?.battery.unit ?? null}
-              icon={<BatteryIcon />}
-              accent="#22c55e"
-            />
-            <StatCard
-              label="Carga"
-              value={formatValue(realtime?.load.value ?? null)}
-              unit={realtime?.load.unit ?? null}
-              icon={<HomeIcon />}
-              accent="#ef4444"
-            />
-            <StatCard
-              label="SOC batería"
-              value={formatValue(realtime?.battery_soc.value ?? null)}
-              unit={realtime?.battery_soc.unit ?? null}
-              icon={<BatteryIcon />}
-              accent="#a855f7"
-            />
+          <div className="mb-8">
+            <div className="flex items-baseline gap-2">
+              <span className="font-mono text-6xl font-medium tabular-nums">
+                {formatValue(realtime?.pv.value)}
+              </span>
+              <span className="text-2xl text-[var(--text-muted)]">kW</span>
+            </div>
+            <p className="mt-1 text-sm text-[var(--text-muted)]">potencia solar ahora</p>
           </div>
 
-          <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-            <p className="mb-3 text-sm font-medium text-slate-600 dark:text-slate-300">
-              PV / Red / Batería / Carga (kW) — última hora
-            </p>
+          <div className="mb-8 flex flex-wrap gap-3">
+            <StatChip label="Red" value={formatValue(realtime?.grid.value)} unit={realtime?.grid.unit ?? null} color="var(--grid)" />
+            <StatChip label="Batería" value={formatValue(realtime?.battery.value)} unit={realtime?.battery.unit ?? null} color="var(--battery)" />
+            <StatChip label="Carga" value={formatValue(realtime?.load.value)} unit={realtime?.load.unit ?? null} color="var(--load)" />
+            <StatChip label="SOC batería" value={formatValue(realtime?.battery_soc.value)} unit={realtime?.battery_soc.unit ?? null} color="var(--battery)" />
+          </div>
+
+          <div className="mb-8 rounded-xl border border-[var(--border)] bg-[var(--surface)] p-5">
+            <p className="mb-3 text-sm text-[var(--text-muted)]">PV / Red / Batería / Carga — última hora</p>
             {history.length > 1 ? (
               <ResponsiveContainer width="100%" height={260}>
                 <AreaChart data={history} margin={{ left: -20, right: 10, top: 5 }}>
@@ -268,18 +234,26 @@ export default function App() {
                       </linearGradient>
                     ))}
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-slate-100 dark:text-slate-800" />
-                  <XAxis dataKey="time" tick={{ fontSize: 11 }} stroke="currentColor" className="text-slate-400" />
-                  <YAxis tick={{ fontSize: 11 }} stroke="currentColor" className="text-slate-400" width={40} unit=" kW" />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <XAxis dataKey="time" tick={{ fontSize: 11, fill: "var(--text-muted)" }} stroke="var(--border)" />
+                  <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} stroke="var(--border)" width={40} unit=" kW" />
                   <Tooltip
-                    contentStyle={{ borderRadius: 12, border: "1px solid #e2e8f0", fontSize: 13 }}
+                    contentStyle={{
+                      borderRadius: 10,
+                      border: "1px solid var(--border)",
+                      background: "var(--surface-raised)",
+                      fontSize: 13,
+                      color: "var(--text)",
+                    }}
                     formatter={(v, name) => [`${v ?? "—"} kW`, name]}
                   />
                   <Legend
                     wrapperStyle={{ fontSize: 12, cursor: "pointer" }}
                     onClick={(e) => toggleSeries(String(e.dataKey))}
                     formatter={(value, entry) => (
-                      <span style={{ opacity: hidden.has(String(entry.dataKey)) ? 0.4 : 1 }}>{value}</span>
+                      <span style={{ opacity: hidden.has(String(entry.dataKey)) ? 0.4 : 1, color: "var(--text-muted)" }}>
+                        {value}
+                      </span>
                     )}
                   />
                   {SERIES.map((s) => (
@@ -298,58 +272,71 @@ export default function App() {
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
-              <p className="py-10 text-center text-sm text-slate-400">
+              <p className="py-10 text-center text-sm text-[var(--text-muted)]">
                 Recogiendo datos… vuelve en un par de minutos.
               </p>
             )}
           </div>
 
-          <div className="flex flex-wrap gap-4">
-            <StatCard
-              label="Energía hoy"
-              value={formatValue(data.today_energy.value)}
-              unit={data.today_energy.unit}
-              icon={<LeafIcon />}
-              accent="#22c55e"
-            />
-            <StatCard
-              label="Energía total"
-              value={formatValue(data.total_energy.value)}
-              unit={data.total_energy.unit}
-              icon={<CounterIcon />}
-              accent="#3b82f6"
-            />
-            <StatCard
-              label="Ingreso hoy"
-              value={formatValue(data.today_income.value)}
-              unit={data.today_income.unit}
-              icon={<CoinIcon />}
-              accent="#a855f7"
-            />
-            <StatCard
-              label="CO2 evitado (total)"
-              value={formatValue(data.co2_reduce_total.value)}
-              unit={data.co2_reduce_total.unit}
-              icon={<LeafIcon />}
-              accent="#10b981"
-            />
-            <StatCard
-              label="Alarmas activas"
-              value={formatValue(data.alarm_count.value)}
-              unit={null}
-              icon={<AlertIcon />}
-              accent={Number(data.alarm_count.value) > 0 ? "#ef4444" : "#64748b"}
-            />
+          <div className="mb-8 grid grid-cols-2 gap-x-6 gap-y-3 text-sm sm:grid-cols-4">
+            <div>
+              <p className="text-[var(--text-muted)]">Energía hoy</p>
+              <p className="font-mono">{formatValue(data.today_energy.value)} {data.today_energy.unit}</p>
+            </div>
+            <div>
+              <p className="text-[var(--text-muted)]">Energía total</p>
+              <p className="font-mono">{formatValue(data.total_energy.value)} {data.total_energy.unit}</p>
+            </div>
+            <div>
+              <p className="text-[var(--text-muted)]">Ingreso hoy</p>
+              <p className="font-mono">{formatValue(data.today_income.value)} {data.today_income.unit}</p>
+            </div>
+            <div>
+              <p className="text-[var(--text-muted)]">CO2 evitado</p>
+              <p className="font-mono">{formatValue(data.co2_reduce_total.value)} {data.co2_reduce_total.unit}</p>
+            </div>
           </div>
 
-          {data.faults.length > 0 ? (
-            <ul className="mt-3 space-y-1 text-sm text-red-700 dark:text-red-300">
-              {data.faults.map((f, i) => (
-                <li key={i}>
-                  ⚠️ {f.device_name}: {f.status}
-                </li>
-              ))}
-            </ul>
+          {faultCount > 0 ? (
+            <div className="mb-6 rounded-lg border border-[var(--danger)]/30 bg-[var(--danger)]/5">
+              <button
+                onClick={() => setFaultsOpen((o) => !o)}
+                className="flex w-full items-center justify-between px-4 py-3 text-left"
+              >
+                <span className="flex items-center gap-2 text-sm font-medium" style={{ color: "var(--danger)" }}>
+                  <AlertIcon />
+                  {faultCount} fallo{faultCount > 1 ? "s" : ""} activo{faultCount > 1 ? "s" : ""}
+                </span>
+                <span className="flex items-center gap-1 text-xs text-[var(--text-muted)]">
+                  {faultsOpen ? "ocultar" : "ver detalles"}
+                  <ChevronIcon open={faultsOpen} />
+                </span>
+              </button>
+              {faultsOpen ? (
+                <ul className="divide-y divide-[var(--border)] border-t border-[var(--border)]">
+                  {data.faults.map((f, i) => (
+                    <li key={i} className="px-4 py-3 text-sm">
+                      <p className="font-medium">
+                        {f.device_name} <span style={{ color: "var(--danger)" }}>· {f.status}</span>
+                      </p>
+                      <p className="mt-0.5 font-mono text-xs text-[var(--text-muted)]">
+                        {f.device_type_name} · {f.model_code} · S/N {f.serial}
+                      </p>
+                      {f.connected_since ? (
+                        <p className="text-xs text-[var(--text-muted)]">Conectado desde {f.connected_since}</p>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </div>
+          ) : null}
+
+          {quota ? (
+            <div className="grid grid-cols-1 gap-4 border-t border-[var(--border)] pt-5 sm:grid-cols-2">
+              <QuotaBar label="Cuota API (hora)" used={quota.hour_used} limit={quota.hour_limit} />
+              <QuotaBar label="Cuota API (mes)" used={quota.month_used} limit={quota.month_limit} />
+            </div>
           ) : null}
         </>
       ) : null}

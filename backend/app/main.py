@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.sungrow_client import SungrowApiError, SungrowClient
+from app.usage_tracker import UsageTracker
 
 load_dotenv()
 
@@ -27,6 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_usage = UsageTracker(Path(__file__).resolve().parent.parent / "quota_usage.json")
+
 _client = SungrowClient(
     region=os.environ.get("SUNGROW_REGION", "europe"),
     app_key=os.environ["SUNGROW_APP_KEY"],
@@ -35,6 +39,7 @@ _client = SungrowClient(
     password=os.environ["SUNGROW_PASSWORD"],
     rsa_public_key=os.environ.get("SUNGROW_RSA_PUBLIC_KEY"),
     api_call_password=os.environ.get("SUNGROW_API_CALL_PASSWORD"),
+    usage_tracker=_usage,
 )
 _plant_id = os.environ.get("SUNGROW_PLANT_ID")
 
@@ -108,4 +113,18 @@ def get_realtime():
         "battery": {"value": kw(data["battery_w"]), "unit": "kW"},
         "load": {"value": kw(data["load_w"]), "unit": "kW"},
         "battery_soc": {"value": data["battery_soc_pct"], "unit": "%"},
+    }
+
+
+@app.get("/api/quota")
+def get_quota():
+    """Self-tracked, not an official number from Sungrow — they don't
+    expose a "calls remaining" endpoint, so this counts our own requests
+    against the documented free-tier limits."""
+    snap = _usage.snapshot()
+    return {
+        "hour_used": snap["hour_used"],
+        "hour_limit": snap["hour_limit"],
+        "month_used": snap["month_used"],
+        "month_limit": snap["month_limit"],
     }

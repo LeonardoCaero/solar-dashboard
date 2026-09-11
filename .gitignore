@@ -8,6 +8,7 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+quota_usage.json
 
 # node
 node_modules/

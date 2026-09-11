@@ -21,6 +21,8 @@ from Crypto.Cipher import AES, PKCS1_v1_5
 from Crypto.PublicKey import RSA
 from Crypto.Util.Padding import pad, unpad
 
+from app.usage_tracker import UsageTracker
+
 REGIONS = {
     "china": "https://gateway.isolarcloud.com",
     "international": "https://gateway.isolarcloud.com.hk",
@@ -73,6 +75,7 @@ class SungrowClient:
         password: str,
         rsa_public_key: str | None = None,
         api_call_password: str | None = None,
+        usage_tracker: UsageTracker | None = None,
     ):
         self._base_url = REGIONS[region]
         self._app_key = app_key
@@ -89,6 +92,8 @@ class SungrowClient:
         self._token: str | None = None
         self._token_fetched_at = 0.0
         self._inverter_ps_key: str | None = None
+        self._resolved_plant_id: str | None = None
+        self._usage_tracker = usage_tracker
 
     def get_realtime(self, plant_id: str | None = None) -> dict:
         """PV / grid / battery / load power (W) + battery SOC (%), read
@@ -143,18 +148,35 @@ class SungrowClient:
         for device in self._get_devices(plant_id):
             status = labels.get(str(device.get("dev_fault_status")))
             if status:
-                faults.append({"device_name": device.get("device_name"), "status": status})
+                faults.append(
+                    {
+                        "device_name": device.get("device_name"),
+                        "status": status,
+                        "device_type_name": device.get("type_name"),
+                        "model_code": device.get("device_model_code"),
+                        "serial": device.get("device_sn"),
+                        "connected_since": device.get("grid_connection_date"),
+                    }
+                )
         return faults
 
     def _get_devices(self, plant_id: str | None) -> list[dict]:
-        if plant_id is None:
-            plant_id = self.get_plant()["ps_id"]
         result = self._post(
             "/openapi/getDeviceList",
-            {"curPage": 1, "size": 20, "ps_id": plant_id},
+            {"curPage": 1, "size": 20, "ps_id": self._resolve_plant_id(plant_id)},
             self._get_token(),
         )
         return result.get("pageList") or []
+
+    def _resolve_plant_id(self, plant_id: str | None) -> str:
+        if plant_id:
+            return plant_id
+        # cached — without this, get_realtime()/get_active_faults() would
+        # each re-fetch the whole station list just to find ps_id, every
+        # time SUNGROW_PLANT_ID isn't set in .env
+        if self._resolved_plant_id is None:
+            self._resolved_plant_id = self.get_plant()["ps_id"]
+        return self._resolved_plant_id
 
     def get_plant(self, plant_id: str | None = None) -> dict:
         result = self._get_station_list()
@@ -166,6 +188,7 @@ class SungrowClient:
                 if plant.get("ps_id") == plant_id:
                     return plant
             raise SungrowApiError(f"plant_id {plant_id} not found in account")
+        self._resolved_plant_id = plants[0]["ps_id"]
         return plants[0]
 
     def _get_station_list(self) -> dict:
@@ -215,6 +238,9 @@ class SungrowClient:
             headers["x-random-secret-key"] = self._encrypt_aes_key()
         else:
             body_str = json.dumps(payload)
+
+        if self._usage_tracker:
+            self._usage_tracker.record_call()
 
         response = requests.post(
             self._base_url + path,
