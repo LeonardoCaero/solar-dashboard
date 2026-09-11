@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
+  Area,
+  AreaChart,
   CartesianGrid,
   Legend,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -136,6 +136,16 @@ const AlertIcon = () => (
 
 export default function App() {
   const [history, setHistory] = useState<FlowPoint[]>([]);
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+
+  function toggleSeries(key: string) {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
 
   const { data, isLoading, isError, error, dataUpdatedAt } = useQuery<PlantSnapshot>({
     queryKey: ["plant"],
@@ -143,14 +153,18 @@ export default function App() {
     refetchInterval: 5 * 60_000,
   });
 
-  const { data: realtime } = useQuery<RealtimeSnapshot>({
+  const { data: realtime, dataUpdatedAt: realtimeUpdatedAt } = useQuery<RealtimeSnapshot>({
     queryKey: ["realtime"],
     queryFn: fetchRealtime,
     refetchInterval: POLL_MS,
   });
 
   useEffect(() => {
-    if (!realtime) return;
+    // keyed on the fetch timestamp, not the `realtime` object — React
+    // Query reuses the same object reference when two polls return
+    // identical values (structural sharing), which would otherwise skip
+    // this effect and leave the chart's time axis stuck
+    if (!realtime || !realtimeUpdatedAt) return;
     const pv = Number(realtime.pv.value);
     const grid = Number(realtime.grid.value);
     const battery = Number(realtime.battery.value);
@@ -171,7 +185,7 @@ export default function App() {
       ];
       return next.slice(-MAX_POINTS);
     });
-  }, [realtime]);
+  }, [realtimeUpdatedAt]);
 
   return (
     <div className="mx-auto min-h-svh max-w-4xl px-5 py-8">
@@ -245,7 +259,15 @@ export default function App() {
             </p>
             {history.length > 1 ? (
               <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={history} margin={{ left: -20, right: 10, top: 5 }}>
+                <AreaChart data={history} margin={{ left: -20, right: 10, top: 5 }}>
+                  <defs>
+                    {SERIES.map((s) => (
+                      <linearGradient key={s.key} id={`fill-${s.key}`} x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={s.color} stopOpacity={0.35} />
+                        <stop offset="100%" stopColor={s.color} stopOpacity={0} />
+                      </linearGradient>
+                    ))}
+                  </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-slate-100 dark:text-slate-800" />
                   <XAxis dataKey="time" tick={{ fontSize: 11 }} stroke="currentColor" className="text-slate-400" />
                   <YAxis tick={{ fontSize: 11 }} stroke="currentColor" className="text-slate-400" width={40} unit=" kW" />
@@ -253,19 +275,27 @@ export default function App() {
                     contentStyle={{ borderRadius: 12, border: "1px solid #e2e8f0", fontSize: 13 }}
                     formatter={(v, name) => [`${v ?? "—"} kW`, name]}
                   />
-                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  <Legend
+                    wrapperStyle={{ fontSize: 12, cursor: "pointer" }}
+                    onClick={(e) => toggleSeries(String(e.dataKey))}
+                    formatter={(value, entry) => (
+                      <span style={{ opacity: hidden.has(String(entry.dataKey)) ? 0.4 : 1 }}>{value}</span>
+                    )}
+                  />
                   {SERIES.map((s) => (
-                    <Line
+                    <Area
                       key={s.key}
                       type="monotone"
                       dataKey={s.key}
                       name={s.label}
                       stroke={s.color}
                       strokeWidth={2}
+                      fill={`url(#fill-${s.key})`}
                       dot={false}
+                      hide={hidden.has(s.key)}
                     />
                   ))}
-                </LineChart>
+                </AreaChart>
               </ResponsiveContainer>
             ) : (
               <p className="py-10 text-center text-sm text-slate-400">
