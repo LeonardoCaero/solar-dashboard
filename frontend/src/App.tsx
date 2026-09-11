@@ -1,25 +1,37 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  Area,
-  AreaChart,
   CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import { fetchPlant, type PlantSnapshot } from "./api";
+import { fetchPlant, fetchRealtime, type PlantSnapshot, type RealtimeSnapshot } from "./api";
 
 // Sungrow's free API tier caps at 2000 calls/hour, 100000/month, and solar
 // power doesn't change fast enough to need finer than this anyway.
 const POLL_MS = 60_000;
 const MAX_POINTS = 60; // 1 hour of history at this poll rate
 
-interface PowerPoint {
+interface FlowPoint {
   time: string;
-  power: number;
+  pv: number;
+  grid: number;
+  battery: number;
+  load: number;
+  soc: number;
 }
+
+const SERIES = [
+  { key: "pv", label: "PV", color: "#f59e0b" },
+  { key: "grid", label: "Red", color: "#3b82f6" },
+  { key: "battery", label: "Batería", color: "#22c55e" },
+  { key: "load", label: "Carga", color: "#ef4444" },
+] as const;
 
 function formatValue(value: number | string | null): string {
   if (value === null || value === undefined) return "—";
@@ -95,6 +107,26 @@ const CoinIcon = () => (
   </svg>
 );
 
+const GridIcon = () => (
+  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+    <path strokeLinecap="round" strokeLinejoin="round" d="M13 3 4 14h6l-1 7 9-11h-6l1-7Z" />
+  </svg>
+);
+
+const BatteryIcon = () => (
+  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+    <rect x="2" y="7" width="18" height="10" rx="2" />
+    <path strokeLinecap="round" d="M22 10v4" />
+  </svg>
+);
+
+const HomeIcon = () => (
+  <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
+    <path strokeLinejoin="round" d="M3 11 12 4l9 7" />
+    <path strokeLinejoin="round" d="M5 9v10h14V9" />
+  </svg>
+);
+
 const AlertIcon = () => (
   <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2">
     <path strokeLinejoin="round" d="M12 3 2 20h20L12 3Z" />
@@ -103,29 +135,43 @@ const AlertIcon = () => (
 );
 
 export default function App() {
-  const [history, setHistory] = useState<PowerPoint[]>([]);
+  const [history, setHistory] = useState<FlowPoint[]>([]);
 
   const { data, isLoading, isError, error, dataUpdatedAt } = useQuery<PlantSnapshot>({
     queryKey: ["plant"],
     queryFn: fetchPlant,
+    refetchInterval: 5 * 60_000,
+  });
+
+  const { data: realtime } = useQuery<RealtimeSnapshot>({
+    queryKey: ["realtime"],
+    queryFn: fetchRealtime,
     refetchInterval: POLL_MS,
   });
 
   useEffect(() => {
-    if (!data) return;
-    const power = Number(data.power.value);
-    if (Number.isNaN(power)) return;
+    if (!realtime) return;
+    const pv = Number(realtime.pv.value);
+    const grid = Number(realtime.grid.value);
+    const battery = Number(realtime.battery.value);
+    const load = Number(realtime.load.value);
+    const soc = Number(realtime.battery_soc.value);
+    if ([pv, grid, battery, load, soc].some(Number.isNaN)) return;
     setHistory((prev) => {
       const next = [
         ...prev,
         {
           time: new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }),
-          power,
+          pv,
+          grid,
+          battery,
+          load,
+          soc,
         },
       ];
       return next.slice(-MAX_POINTS);
     });
-  }, [data]);
+  }, [realtime]);
 
   return (
     <div className="mx-auto min-h-svh max-w-4xl px-5 py-8">
@@ -157,50 +203,69 @@ export default function App() {
         <>
           <div className="mb-4 flex flex-wrap gap-4">
             <StatCard
-              label="Potencia"
-              value={formatValue(data.power.value)}
-              unit={data.power.unit}
+              label="PV"
+              value={formatValue(realtime?.pv.value ?? null)}
+              unit={realtime?.pv.unit ?? null}
               icon={<SunIcon />}
               accent="#f59e0b"
             />
             <StatCard
-              label="Hoy"
-              value={formatValue(data.today_energy.value)}
-              unit={data.today_energy.unit}
-              icon={<LeafIcon />}
+              label="Red"
+              value={formatValue(realtime?.grid.value ?? null)}
+              unit={realtime?.grid.unit ?? null}
+              icon={<GridIcon />}
+              accent="#3b82f6"
+            />
+            <StatCard
+              label="Batería"
+              value={formatValue(realtime?.battery.value ?? null)}
+              unit={realtime?.battery.unit ?? null}
+              icon={<BatteryIcon />}
               accent="#22c55e"
             />
             <StatCard
-              label="Total"
-              value={formatValue(data.total_energy.value)}
-              unit={data.total_energy.unit}
-              icon={<CounterIcon />}
-              accent="#3b82f6"
+              label="Carga"
+              value={formatValue(realtime?.load.value ?? null)}
+              unit={realtime?.load.unit ?? null}
+              icon={<HomeIcon />}
+              accent="#ef4444"
+            />
+            <StatCard
+              label="SOC batería"
+              value={formatValue(realtime?.battery_soc.value ?? null)}
+              unit={realtime?.battery_soc.unit ?? null}
+              icon={<BatteryIcon />}
+              accent="#a855f7"
             />
           </div>
 
           <div className="mb-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
             <p className="mb-3 text-sm font-medium text-slate-600 dark:text-slate-300">
-              Potencia en esta sesión
+              PV / Red / Batería / Carga (kW) — última hora
             </p>
             {history.length > 1 ? (
-              <ResponsiveContainer width="100%" height={220}>
-                <AreaChart data={history} margin={{ left: -20, right: 10, top: 5 }}>
-                  <defs>
-                    <linearGradient id="powerFill" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#f59e0b" stopOpacity={0.4} />
-                      <stop offset="100%" stopColor="#f59e0b" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
+              <ResponsiveContainer width="100%" height={260}>
+                <LineChart data={history} margin={{ left: -20, right: 10, top: 5 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-slate-100 dark:text-slate-800" />
                   <XAxis dataKey="time" tick={{ fontSize: 11 }} stroke="currentColor" className="text-slate-400" />
-                  <YAxis tick={{ fontSize: 11 }} stroke="currentColor" className="text-slate-400" width={40} />
+                  <YAxis tick={{ fontSize: 11 }} stroke="currentColor" className="text-slate-400" width={40} unit=" kW" />
                   <Tooltip
                     contentStyle={{ borderRadius: 12, border: "1px solid #e2e8f0", fontSize: 13 }}
-                    formatter={(v) => [`${v ?? "—"} ${data.power.unit ?? ""}`, "Potencia"]}
+                    formatter={(v, name) => [`${v ?? "—"} kW`, name]}
                   />
-                  <Area type="monotone" dataKey="power" stroke="#f59e0b" strokeWidth={2} fill="url(#powerFill)" />
-                </AreaChart>
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  {SERIES.map((s) => (
+                    <Line
+                      key={s.key}
+                      type="monotone"
+                      dataKey={s.key}
+                      name={s.label}
+                      stroke={s.color}
+                      strokeWidth={2}
+                      dot={false}
+                    />
+                  ))}
+                </LineChart>
               </ResponsiveContainer>
             ) : (
               <p className="py-10 text-center text-sm text-slate-400">
@@ -210,6 +275,20 @@ export default function App() {
           </div>
 
           <div className="flex flex-wrap gap-4">
+            <StatCard
+              label="Energía hoy"
+              value={formatValue(data.today_energy.value)}
+              unit={data.today_energy.unit}
+              icon={<LeafIcon />}
+              accent="#22c55e"
+            />
+            <StatCard
+              label="Energía total"
+              value={formatValue(data.total_energy.value)}
+              unit={data.total_energy.unit}
+              icon={<CounterIcon />}
+              accent="#3b82f6"
+            />
             <StatCard
               label="Ingreso hoy"
               value={formatValue(data.today_income.value)}
@@ -232,6 +311,16 @@ export default function App() {
               accent={Number(data.alarm_count.value) > 0 ? "#ef4444" : "#64748b"}
             />
           </div>
+
+          {data.faults.length > 0 ? (
+            <ul className="mt-3 space-y-1 text-sm text-red-700 dark:text-red-300">
+              {data.faults.map((f, i) => (
+                <li key={i}>
+                  ⚠️ {f.device_name}: {f.status}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </>
       ) : null}
     </div>

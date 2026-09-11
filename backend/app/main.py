@@ -38,15 +38,25 @@ _client = SungrowClient(
 )
 _plant_id = os.environ.get("SUNGROW_PLANT_ID")
 
-_CACHE_TTL_SECONDS = 60
-_cache: dict = {"data": None, "fetched_at": 0.0}
+
+def _ttl_cache(ttl_seconds: float, fetch):
+    state: dict = {"data": None, "fetched_at": 0.0}
+
+    def get():
+        if time.monotonic() - state["fetched_at"] > ttl_seconds:
+            state["data"] = fetch()
+            state["fetched_at"] = time.monotonic()
+        return state["data"]
+
+    return get
 
 
-def _get_plant_cached() -> dict:
-    if time.monotonic() - _cache["fetched_at"] > _CACHE_TTL_SECONDS:
-        _cache["data"] = _client.get_plant(_plant_id)
-        _cache["fetched_at"] = time.monotonic()
-    return _cache["data"]
+# plant totals (today/total energy, income, co2, alarms) barely move —
+# 5min is plenty. Realtime power is what the chart needs fresh, but even
+# solar power doesn't swing meaningfully inside 60s.
+_get_plant_cached = _ttl_cache(300, lambda: _client.get_plant(_plant_id))
+_get_realtime_cached = _ttl_cache(60, lambda: _client.get_realtime(_plant_id))
+_get_faults_cached = _ttl_cache(300, lambda: _client.get_active_faults(_plant_id))
 
 
 @app.get("/health")
@@ -58,6 +68,7 @@ def health():
 def get_plant():
     try:
         plant = _get_plant_cached()
+        faults = _get_faults_cached()
     except SungrowApiError as err:
         raise HTTPException(status_code=502, detail=str(err)) from err
 
@@ -74,6 +85,27 @@ def get_plant():
         "total_energy": metric("total_energy"),
         "today_income": metric("today_income"),
         "co2_reduce_total": metric("co2_reduce_total"),
-        "alarm_count": metric("alarm_count"),
+        # per-device fault status, not the plant's own (laggy) alarm_count
+        "alarm_count": {"value": len(faults), "unit": None},
+        "faults": faults,
         "updated_at": plant.get("curr_power_update_time"),
+    }
+
+
+@app.get("/api/realtime")
+def get_realtime():
+    try:
+        data = _get_realtime_cached()
+    except SungrowApiError as err:
+        raise HTTPException(status_code=502, detail=str(err)) from err
+
+    def kw(watts: float) -> float:
+        return round(watts / 1000, 3)
+
+    return {
+        "pv": {"value": kw(data["pv_w"]), "unit": "kW"},
+        "grid": {"value": kw(data["grid_w"]), "unit": "kW"},
+        "battery": {"value": kw(data["battery_w"]), "unit": "kW"},
+        "load": {"value": kw(data["load_w"]), "unit": "kW"},
+        "battery_soc": {"value": data["battery_soc_pct"], "unit": "%"},
     }

@@ -33,6 +33,23 @@ REGIONS = {
 # early-expired token still self-heals instead of erroring out.
 _TOKEN_TTL_SECONDS = 25 * 60
 
+HYBRID_INVERTER_DEVICE_TYPE = 14
+
+# Point IDs found via getOpenPointInfo on a Sungrow SH6.0RS hybrid inverter —
+# all on the one device, so one getDeviceRealTimeData call covers PV/Grid/
+# Battery/Load/SOC. Point numbering is shared across the SHx/RS product
+# line, but if your inverter reports nothing for these, re-run the
+# getOpenPointInfo discovery (see README) and adjust.
+REALTIME_POINTS = {
+    "pv_power": "13003",  # Total DC power
+    "feed_in_power": "13121",  # power exported to grid
+    "grid_purchase_power": "13149",  # power imported from grid
+    "battery_charge_power": "13126",
+    "battery_discharge_power": "13150",
+    "load_power": "13119",
+    "battery_soc": "13141",  # Battery level (SOC), %
+}
+
 
 class SungrowApiError(Exception):
     """Raised when the iSolarCloud API returns a non-success result."""
@@ -71,6 +88,73 @@ class SungrowClient:
             self._aes_key = key_password[:16].ljust(16, b"0")
         self._token: str | None = None
         self._token_fetched_at = 0.0
+        self._inverter_ps_key: str | None = None
+
+    def get_realtime(self, plant_id: str | None = None) -> dict:
+        """PV / grid / battery / load power (W) + battery SOC (%), read
+        straight off the hybrid inverter."""
+        ps_key = self._get_inverter_ps_key(plant_id)
+        token = self._get_token()
+        body = {
+            "device_type": HYBRID_INVERTER_DEVICE_TYPE,
+            "point_id_list": list(REALTIME_POINTS.values()),
+            "ps_key_list": [ps_key],
+        }
+        try:
+            result = self._post("/openapi/getDeviceRealTimeData", body, token)
+        except SungrowApiError:
+            self._token = None
+            result = self._post("/openapi/getDeviceRealTimeData", body, self._get_token())
+
+        entries = result.get("device_point_list") or []
+        if not entries:
+            raise SungrowApiError("No real-time data returned for the inverter")
+        raw = entries[0].get("device_point") or entries[0]
+
+        def point(name: str) -> float:
+            value = raw.get("p" + REALTIME_POINTS[name])
+            return float(value) if value is not None else 0.0
+
+        return {
+            "pv_w": point("pv_power"),
+            "grid_w": point("feed_in_power") - point("grid_purchase_power"),
+            "battery_w": point("battery_discharge_power") - point("battery_charge_power"),
+            "load_w": point("load_power"),
+            "battery_soc_pct": point("battery_soc"),
+        }
+
+    def _get_inverter_ps_key(self, plant_id: str | None) -> str:
+        if self._inverter_ps_key:
+            return self._inverter_ps_key
+        for device in self._get_devices(plant_id):
+            if device.get("device_type") == HYBRID_INVERTER_DEVICE_TYPE:
+                self._inverter_ps_key = device["ps_key"]
+                return self._inverter_ps_key
+        raise SungrowApiError("No hybrid inverter device found in this plant")
+
+    def get_active_faults(self, plant_id: str | None = None) -> list[dict]:
+        """Per-device fault status (dev_fault_status: 1=Faulty, 2=Alarm,
+        4=Normal). The plant-level alarm_count from get_plant() lags behind
+        this and can miss faults that haven't been logged as a formal
+        alarm ticket yet — check this instead for "is something wrong right
+        now"."""
+        labels = {"1": "Faulty", "2": "Alarm"}
+        faults = []
+        for device in self._get_devices(plant_id):
+            status = labels.get(str(device.get("dev_fault_status")))
+            if status:
+                faults.append({"device_name": device.get("device_name"), "status": status})
+        return faults
+
+    def _get_devices(self, plant_id: str | None) -> list[dict]:
+        if plant_id is None:
+            plant_id = self.get_plant()["ps_id"]
+        result = self._post(
+            "/openapi/getDeviceList",
+            {"curPage": 1, "size": 20, "ps_id": plant_id},
+            self._get_token(),
+        )
+        return result.get("pageList") or []
 
     def get_plant(self, plant_id: str | None = None) -> dict:
         result = self._get_station_list()
